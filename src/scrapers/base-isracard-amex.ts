@@ -15,6 +15,7 @@ import {
   type TransactionInstallments,
   type TransactionsAccount,
 } from '../transactions';
+import { type IsracardExtendedDetails, type IsracardExtendedTransaction } from '../isracard-extended-transactions';
 import { BaseScraperWithBrowser } from './base-scraper-with-browser';
 import { ScraperErrorTypes } from './errors';
 import { type ScraperOptions, type ScraperScrapingResult } from './interface';
@@ -281,17 +282,35 @@ async function getExtraScrapTransaction(
   url.searchParams.set('moedChiuv', month.format('MMYYYY'));
 
   debug(`fetching extra scrap for transaction ${transaction.identifier} for month ${month.format('YYYY-MM')}`);
-  const data = await fetchGetWithinPage<ScrapedTransactionData>(page, url.toString());
+  let data: ScrapedTransactionData | null = null;
+  try {
+    data = await fetchGetWithinPage<ScrapedTransactionData>(page, url.toString());
+  } catch (e) {
+    debug(
+      `failed to fetch extra scrap for transaction ${transaction.identifier} for month ${month.format(
+        'YYYY-MM',
+      )}, continuing without additional information`,
+      e,
+    );
+    return transaction;
+  }
   if (!data) {
     return transaction;
   }
 
   const rawCategory = _.get(data, 'PirteyIska_204Bean.sector') ?? '';
-  return {
+  const extendedDetails: IsracardExtendedDetails = {
+    rawDetails: data.PirteyIska_204Bean ?? data,
+  };
+
+  const updatedTransaction: IsracardExtendedTransaction = {
     ...transaction,
-    category: rawCategory.trim(),
+    category: rawCategory.trim() || transaction.category,
+    extendedDetails,
     rawTransaction: getRawTransaction(data, transaction),
   };
+
+  return updatedTransaction;
 }
 
 async function getExtraScrapAccount(
