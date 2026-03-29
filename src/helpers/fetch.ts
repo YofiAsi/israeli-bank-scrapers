@@ -1,7 +1,31 @@
 import nodeFetch from 'node-fetch';
 import { type Page } from 'puppeteer';
+import { AutomationBlockedError } from '../scrapers/errors';
 
 const JSON_CONTENT_TYPE = 'application/json';
+
+function assertLooksLikeJsonResponse(
+  raw: string,
+  httpStatus: number,
+  context: 'fetchGetWithinPage' | 'fetchPostWithinPage',
+  url: string,
+) {
+  if (httpStatus === 429 || httpStatus === 403) {
+    throw new AutomationBlockedError(
+      'The bank site rate-limited or blocked automated access. Try again later or use a shorter sync range.',
+    );
+  }
+  if (/^\s*[\[{]/.test(raw)) {
+    return;
+  }
+  if (/block\s+automation/i.test(raw)) {
+    throw new AutomationBlockedError(
+      'The bank site blocked this request as automated traffic. Try again later or use a shorter sync range.',
+    );
+  }
+  const preview = raw.trim().slice(0, 200);
+  throw new Error(`${context}: expected JSON but received non-JSON (HTTP ${httpStatus}). url: ${url}, bodyPreview: ${preview}`);
+}
 
 function getJsonHeaders() {
   return {
@@ -76,9 +100,13 @@ export async function fetchGetWithinPage<TResult>(
   }, url);
   if (result !== null) {
     try {
+      assertLooksLikeJsonResponse(result, status, 'fetchGetWithinPage', url);
       return JSON.parse(result);
     } catch (e) {
       if (!ignoreErrors) {
+        if (e instanceof AutomationBlockedError) {
+          throw e;
+        }
         throw new Error(
           `fetchGetWithinPage parse error: ${e instanceof Error ? `${e.message}\n${e.stack}` : String(e)}, url: ${url}, result: ${result}, status: ${status}`,
         );
@@ -95,7 +123,7 @@ export async function fetchPostWithinPage<TResult>(
   extraHeaders: Record<string, any> = {},
   ignoreErrors = false,
 ): Promise<TResult | null> {
-  const result = await page.evaluate(
+  const [result, status] = await page.evaluate(
     async (innerUrl: string, innerData: Record<string, any>, innerExtraHeaders: Record<string, any>) => {
       const response = await fetch(innerUrl, {
         method: 'POST',
@@ -108,9 +136,10 @@ export async function fetchPostWithinPage<TResult>(
         ),
       });
       if (response.status === 204) {
-        return null;
+        return [null, response.status] as const;
       }
-      return response.text();
+      const text = await response.text();
+      return [text, response.status] as const;
     },
     url,
     data,
@@ -119,10 +148,14 @@ export async function fetchPostWithinPage<TResult>(
 
   try {
     if (result !== null) {
+      assertLooksLikeJsonResponse(result, status, 'fetchPostWithinPage', url);
       return JSON.parse(result);
     }
   } catch (e) {
     if (!ignoreErrors) {
+      if (e instanceof AutomationBlockedError) {
+        throw e;
+      }
       throw new Error(
         `fetchPostWithinPage parse error: ${e instanceof Error ? `${e.message}\n${e.stack}` : String(e)}, url: ${url}, data: ${JSON.stringify(data)}, extraHeaders: ${JSON.stringify(extraHeaders)}, result: ${result}`,
       );

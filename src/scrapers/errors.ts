@@ -4,8 +4,21 @@ export enum ScraperErrorTypes {
   ChangePassword = 'CHANGE_PASSWORD',
   Timeout = 'TIMEOUT',
   AccountBlocked = 'ACCOUNT_BLOCKED',
+  AutomationBlocked = 'AUTOMATION_BLOCKED',
   Generic = 'GENERIC',
   General = 'GENERAL_ERROR',
+}
+
+export class AutomationBlockedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AutomationBlockedError';
+    Object.setPrototypeOf(this, AutomationBlockedError.prototype);
+  }
+}
+
+export function isAutomationBlockedError(e: unknown): e is AutomationBlockedError {
+  return e instanceof AutomationBlockedError || (e instanceof Error && e.name === 'AutomationBlockedError');
 }
 
 export type ErrorResult = {
@@ -28,4 +41,8 @@ export function createTimeoutError(errorMessage: string): ErrorResult {
 
 export function createGenericError(errorMessage: string): ErrorResult {
   return createErrorResult(ScraperErrorTypes.Generic, errorMessage);
+}
+
+export function createAutomationBlockedError(errorMessage: string): ErrorResult {
+  return createErrorResult(ScraperErrorTypes.AutomationBlocked, errorMessage);
 }

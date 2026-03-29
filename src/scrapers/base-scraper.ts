@@ -2,7 +2,12 @@ import { EventEmitter } from 'events';
 import moment from 'moment-timezone';
 import { type CompanyTypes, ScraperProgressTypes } from '../definitions';
 import { TimeoutError } from '../helpers/waiting';
-import { createGenericError, createTimeoutError } from './errors';
+import {
+  createAutomationBlockedError,
+  createGenericError,
+  createTimeoutError,
+  isAutomationBlockedError,
+} from './errors';
 import {
   type Scraper,
   type ScraperCredentials,
@@ -35,7 +40,11 @@ export class BaseScraper<TCredentials extends ScraperCredentials> implements Scr
       loginResult = await this.login(credentials);
     } catch (e) {
       loginResult =
-        e instanceof TimeoutError ? createTimeoutError((e as Error).message) : createGenericError((e as Error).message);
+        e instanceof TimeoutError
+          ? createTimeoutError((e as Error).message)
+          : isAutomationBlockedError(e)
+            ? createAutomationBlockedError((e as Error).message)
+            : createGenericError((e as Error).message);
     }
 
     let scrapeResult;
@@ -46,7 +55,9 @@ export class BaseScraper<TCredentials extends ScraperCredentials> implements Scr
         scrapeResult =
           e instanceof TimeoutError
             ? createTimeoutError((e as Error).message)
-            : createGenericError((e as Error).message);
+            : isAutomationBlockedError(e)
+              ? createAutomationBlockedError((e as Error).message)
+              : createGenericError((e as Error).message);
       }
     } else {
       scrapeResult = loginResult;
@@ -56,7 +67,10 @@ export class BaseScraper<TCredentials extends ScraperCredentials> implements Scr
       const success = scrapeResult && scrapeResult.success === true;
       await this.terminate(success);
     } catch (e) {
-      scrapeResult = createGenericError((e as Error).message);
+      scrapeResult =
+        isAutomationBlockedError(e)
+          ? createAutomationBlockedError((e as Error).message)
+          : createGenericError((e as Error).message);
     }
     this.emitProgress(ScraperProgressTypes.EndScraping);
 
