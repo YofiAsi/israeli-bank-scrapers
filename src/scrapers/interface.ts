@@ -110,6 +110,12 @@ export type ScraperOptions = ScraperBrowserOptions & {
   startDate: Date;
 
   /**
+   * Last calendar month to include when iterating Isracard dashboard months (inclusive).
+   * Without this, Isracard-Amex scrapers request every month from startDate through today, which triggers rate limits for old start dates.
+   */
+  transactionMonthsEndDate?: Date;
+
+  /**
    * scrape transactions to be processed X months in the future
    */
   futureMonthsToScrape?: number;
