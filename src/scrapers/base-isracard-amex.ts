@@ -255,6 +255,13 @@ async function fetchTransactions(
         if (options.outputData?.enableTransactionsFilterByDate ?? true) {
           allTxns = filterOldTransactions(allTxns, startMoment, options.combineInstallments || false);
         }
+        if (
+          options.transactionMonthsEndDate &&
+          (options.outputData?.enableTransactionsFilterByDate ?? true)
+        ) {
+          const endCapDay = moment(options.transactionMonthsEndDate).endOf('day');
+          allTxns = allTxns.filter(txn => moment(txn.date).isSameOrBefore(endCapDay));
+        }
         accountTxns[account.accountNumber] = {
           accountNumber: account.accountNumber,
           index: account.index,
@@ -363,7 +370,29 @@ async function fetchAllTransactions(
   startMoment: Moment,
 ) {
   const futureMonthsToScrape = options.futureMonthsToScrape ?? 1;
-  const allMonths = getAllMonthMoments(startMoment, futureMonthsToScrape);
+  let allMonths: Moment[];
+  if (options.transactionMonthsEndDate) {
+    const startM = moment(startMoment).startOf('month');
+    const endCap = moment(options.transactionMonthsEndDate).startOf('month');
+    let spanEnd = endCap.clone().add(2, 'month');
+    let lastAllowed = moment().startOf('month');
+    if (futureMonthsToScrape > 0) {
+      lastAllowed = lastAllowed.clone().add(futureMonthsToScrape, 'month');
+    }
+    if (spanEnd.isAfter(lastAllowed, 'month')) {
+      spanEnd = lastAllowed;
+    }
+    allMonths = [];
+    for (
+      let cur = startM.clone();
+      cur.isSameOrBefore(spanEnd, 'month');
+      cur = cur.clone().add(1, 'month')
+    ) {
+      allMonths.push(cur.clone());
+    }
+  } else {
+    allMonths = getAllMonthMoments(startMoment, futureMonthsToScrape);
+  }
   const results: ScrapedAccountsWithIndex[] = await runSerial(
     allMonths.map(monthMoment => () => {
       return fetchTransactions(page, options, companyServiceOptions, startMoment, monthMoment);
