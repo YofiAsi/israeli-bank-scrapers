@@ -1,5 +1,6 @@
 import { type BrowserContext, type Browser, type Page } from 'puppeteer';
 import { type CompanyTypes, type ScraperProgressTypes } from '../definitions';
+import { type RateLimiterOptions } from '../helpers/rate-limiter';
 import { type TransactionsAccount } from '../transactions';
 import { type ErrorResult, type ScraperErrorTypes } from './errors';
 
@@ -177,7 +178,15 @@ export type ScraperOptions = ScraperBrowserOptions & {
    * Opt-in features for the scrapers, allowing safe rollout of new breaking changes.
    */
   optInFeatures?: Array<OptInFeatures>;
+
+  /**
+   * Rate limiting configuration for scrapers that support it (currently Isracard/Amex).
+   * All fields are optional with sensible defaults.
+   */
+  rateLimitOptions?: ScraperRateLimitOptions;
 };
+
+export type ScraperRateLimitOptions = RateLimiterOptions;
 
 export interface OutputDataOptions {
   /**
@@ -196,7 +205,9 @@ export interface ScraperScrapingResult {
 
 export interface Scraper<TCredentials extends ScraperCredentials> {
   scrape(credentials: TCredentials): Promise<ScraperScrapingResult>;
-  onProgress(func: (companyId: CompanyTypes, payload: { type: ScraperProgressTypes }) => void): void;
+  onProgress(
+    func: (companyId: CompanyTypes, payload: { type: ScraperProgressTypes; [key: string]: any }) => void,
+  ): void;
   triggerTwoFactorAuth(phoneNumber: string): Promise<ScraperTwoFactorAuthTriggerResult>;
   getLongTermTwoFactorToken(otpCode: string): Promise<ScraperGetLongTermTwoFactorTokenResult>;
 }

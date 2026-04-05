@@ -1,5 +1,8 @@
-export { CompanyTypes, SCRAPERS } from './definitions';
+export { CompanyTypes, SCRAPERS, ScraperProgressTypes } from './definitions';
 export { default as createScraper } from './scrapers/factory';
+export { FetchBlockedError, type FetchWithinPageOptions } from './helpers/fetch';
+export { DEFAULT_BLOCKED_RETRY_DELAYS_MS } from './helpers/rate-limiter';
+export { ScraperErrorTypes, createRateLimitedError } from './scrapers/errors';
 
 // Note: the typo ScaperScrapingResult & ScraperLoginResult (sic) are exported here for backward compatibility
 export {
@@ -9,6 +12,7 @@ export {
   ScraperCredentials,
   ScraperLoginResult,
   ScraperOptions,
+  ScraperRateLimitOptions,
   ScraperScrapingResult,
 } from './scrapers/interface';
 

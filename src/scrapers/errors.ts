@@ -4,6 +4,7 @@ export enum ScraperErrorTypes {
   ChangePassword = 'CHANGE_PASSWORD',
   Timeout = 'TIMEOUT',
   AccountBlocked = 'ACCOUNT_BLOCKED',
+  RateLimited = 'RATE_LIMITED',
   Generic = 'GENERIC',
   General = 'GENERAL_ERROR',
 }
@@ -28,4 +29,8 @@ export function createTimeoutError(errorMessage: string): ErrorResult {
 
 export function createGenericError(errorMessage: string): ErrorResult {
   return createErrorResult(ScraperErrorTypes.Generic, errorMessage);
+}
+
+export function createRateLimitedError(errorMessage: string): ErrorResult {
+  return createErrorResult(ScraperErrorTypes.RateLimited, errorMessage);
 }

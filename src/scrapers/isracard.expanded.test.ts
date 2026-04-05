@@ -1,6 +1,5 @@
+import 'dotenv/config';
 import { type IsracardExtendedTransaction } from '../isracard-extended-transactions';
-
-require('dotenv').config();
 
 function getEnvOrUndefined(name: string): string | undefined {
   const value = process.env[name];
@@ -8,7 +7,7 @@ function getEnvOrUndefined(name: string): string | undefined {
 }
 
 describe('Isracard legacy scraper - expanded mode', () => {
-  test('should scrape transactions with extended details when enabled"', async () => {
+  test('should scrape transactions with extended details when enabled', () => {
     const id = getEnvOrUndefined('ISRACARD_ID');
     const card6Digits = getEnvOrUndefined('ISRACARD_CARD6_DIGITS');
     const password = getEnvOrUndefined('ISRACARD_PASSWORD');
@@ -67,4 +66,3 @@ describe('Isracard legacy scraper - expanded mode', () => {
     expect(hasExtendedDetails).toBeTruthy();
   });
 });
-

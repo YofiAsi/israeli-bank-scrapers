@@ -15,4 +15,3 @@ export interface IsracardExtendedDetails {
 export interface IsracardExtendedTransaction extends Transaction {
   extendedDetails?: IsracardExtendedDetails;
 }
-

@@ -105,12 +105,16 @@ class BaseScraperWithBrowser<TCredentials extends ScraperCredentials> extends Ba
     this.emitProgress(ScraperProgressTypes.Initializing);
 
     const page = await this.initializePage();
-    await page.setCacheEnabled(false); // Clear cache and avoid 300's response status
-
     if (!page) {
       debug('failed to initiate a browser page, exit');
       return;
     }
+
+    await this.attachBrowserPage(page);
+  }
+
+  protected async attachBrowserPage(page: Page): Promise<void> {
+    await page.setCacheEnabled(false);
 
     this.page = page;
 
@@ -135,6 +139,48 @@ class BaseScraperWithBrowser<TCredentials extends ScraperCredentials> extends Ba
     this.page.on('requestfailed', request => {
       debug('Request failed: %s %s', request.failure()?.errorText, request.url());
     });
+  }
+
+  protected async resetBrowserSession(): Promise<void> {
+    debug('reset browser session (new page; relaunch if we own the browser)');
+    if ('browserContext' in this.options) {
+      const ctx = this.options.browserContext;
+      await safeCleanup(async () => {
+        await this.page?.close();
+      });
+      this.cleanups = [];
+      const page = await ctx.newPage();
+      await this.attachBrowserPage(page);
+      return;
+    }
+
+    if ('browser' in this.options) {
+      const externalBrowser = this.options.browser;
+      if (!externalBrowser.connected) {
+        throw new Error('Session recycle requires a connected browser instance');
+      }
+      await safeCleanup(async () => {
+        await this.page?.close();
+      });
+      this.cleanups = [];
+      if (!this.options.skipCloseBrowser) {
+        this.cleanups.push(async () => {
+          debug('closing the browser');
+          await externalBrowser.close();
+        });
+      }
+      const page = await externalBrowser.newPage();
+      await this.attachBrowserPage(page);
+      return;
+    }
+
+    await Promise.all(this.cleanups.reverse().map(safeCleanup));
+    this.cleanups = [];
+    const page = await this.initializePage();
+    if (!page) {
+      throw new Error('failed to open a new browser page after session reset');
+    }
+    await this.attachBrowserPage(page);
   }
 
   private async initializePage() {

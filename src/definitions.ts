@@ -107,4 +107,7 @@ export enum ScraperProgressTypes {
   ChangePassword = 'CHANGE_PASSWORD',
   EndScraping = 'END_SCRAPING',
   Terminating = 'TERMINATING',
+  ScrapingMonth = 'SCRAPING_MONTH',
+  RateLimitRetry = 'RATE_LIMIT_RETRY',
+  SessionRecycle = 'SESSION_RECYCLE',
 }

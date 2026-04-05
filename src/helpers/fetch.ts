@@ -1,6 +1,58 @@
 import nodeFetch from 'node-fetch';
 import { type Page } from 'puppeteer';
 
+export class FetchBlockedError extends Error {
+  constructor(
+    public statusCode: number,
+    public responseBody: string,
+    url: string,
+  ) {
+    super(`Request blocked with status ${statusCode} for URL: ${url}`);
+    this.name = 'FetchBlockedError';
+  }
+}
+
+export type FetchWithinPageOptions = {
+  ignoreErrors?: boolean;
+  treatBlockedResponse?: boolean;
+};
+
+function normalizeWithinPageOptions(options?: boolean | FetchWithinPageOptions): {
+  ignoreErrors: boolean;
+  treatBlockedResponse: boolean;
+} {
+  if (typeof options === 'boolean') {
+    return { ignoreErrors: options, treatBlockedResponse: false };
+  }
+  return {
+    ignoreErrors: options?.ignoreErrors ?? false,
+    treatBlockedResponse: options?.treatBlockedResponse ?? false,
+  };
+}
+
+function throwIfBlockedHttpStatus(
+  status: number,
+  body: string | null,
+  url: string,
+  treatBlockedResponse: boolean,
+): void {
+  if (!treatBlockedResponse) {
+    return;
+  }
+  if (status === 422 || status === 429) {
+    throw new FetchBlockedError(status, body ?? '', url);
+  }
+}
+
+function throwIfAutomationBlockedBody(body: string | null, url: string, treatBlockedResponse: boolean): void {
+  if (!treatBlockedResponse || body === null) {
+    return;
+  }
+  if (body.includes('AUTOMATION_BLOCKED')) {
+    throw new FetchBlockedError(429, body, url);
+  }
+}
+
 const JSON_CONTENT_TYPE = 'application/json';
 
 function getJsonHeaders() {
@@ -58,8 +110,9 @@ export async function fetchGraphql<TResult>(
 export async function fetchGetWithinPage<TResult>(
   page: Page,
   url: string,
-  ignoreErrors = false,
+  options?: boolean | FetchWithinPageOptions,
 ): Promise<TResult | null> {
+  const { ignoreErrors, treatBlockedResponse } = normalizeWithinPageOptions(options);
   const [result, status] = await page.evaluate(async innerUrl => {
     let response: Response | undefined;
     try {
@@ -74,6 +127,8 @@ export async function fetchGetWithinPage<TResult>(
       );
     }
   }, url);
+  throwIfBlockedHttpStatus(status, result, url, treatBlockedResponse);
+  throwIfAutomationBlockedBody(result, url, treatBlockedResponse);
   if (result !== null) {
     try {
       return JSON.parse(result);
@@ -93,9 +148,10 @@ export async function fetchPostWithinPage<TResult>(
   url: string,
   data: Record<string, any>,
   extraHeaders: Record<string, any> = {},
-  ignoreErrors = false,
+  options?: boolean | FetchWithinPageOptions,
 ): Promise<TResult | null> {
-  const result = await page.evaluate(
+  const { ignoreErrors, treatBlockedResponse } = normalizeWithinPageOptions(options);
+  const [result, status] = await page.evaluate(
     async (innerUrl: string, innerData: Record<string, any>, innerExtraHeaders: Record<string, any>) => {
       const response = await fetch(innerUrl, {
         method: 'POST',
@@ -108,14 +164,17 @@ export async function fetchPostWithinPage<TResult>(
         ),
       });
       if (response.status === 204) {
-        return null;
+        return [null, response.status] as const;
       }
-      return response.text();
+      return [await response.text(), response.status] as const;
     },
     url,
     data,
     extraHeaders,
   );
+
+  throwIfBlockedHttpStatus(status, result, url, treatBlockedResponse);
+  throwIfAutomationBlockedBody(result, url, treatBlockedResponse);
 
   try {
     if (result !== null) {

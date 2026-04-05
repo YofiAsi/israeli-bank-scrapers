@@ -5,9 +5,10 @@ import { ALT_SHEKEL_CURRENCY, SHEKEL_CURRENCY, SHEKEL_CURRENCY_KEYWORD } from '.
 import { ScraperProgressTypes } from '../definitions';
 import getAllMonthMoments from '../helpers/dates';
 import { getDebug } from '../helpers/debug';
-import { fetchGetWithinPage, fetchPostWithinPage } from '../helpers/fetch';
+import { FetchBlockedError, fetchGetWithinPage, fetchPostWithinPage } from '../helpers/fetch';
+import { RateLimiter } from '../helpers/rate-limiter';
 import { filterOldTransactions, fixInstallments, getRawTransaction } from '../helpers/transactions';
-import { runSerial, sleep } from '../helpers/waiting';
+import { runSerial } from '../helpers/waiting';
 import {
   TransactionStatuses,
   TransactionTypes,
@@ -21,10 +22,7 @@ import { ScraperErrorTypes } from './errors';
 import { type ScraperOptions, type ScraperScrapingResult } from './interface';
 import { interceptionPriorities, maskHeadlessUserAgent } from '../helpers/browser';
 
-const RATE_LIMIT = {
-  SLEEP_BETWEEN: 1000,
-  TRANSACTIONS_BATCH_SIZE: 10,
-} as const;
+const TRANSACTIONS_BATCH_SIZE = 10;
 
 const COUNTRY_CODE = '212';
 const ID_TYPE = '1';
@@ -119,10 +117,17 @@ function getAccountsUrl(servicesUrl: string, monthMoment: Moment) {
   return url.toString();
 }
 
-async function fetchAccounts(page: Page, servicesUrl: string, monthMoment: Moment): Promise<ScrapedAccount[]> {
+async function fetchAccounts(
+  page: Page,
+  servicesUrl: string,
+  monthMoment: Moment,
+  rateLimiter: RateLimiter,
+): Promise<ScrapedAccount[]> {
   const dataUrl = getAccountsUrl(servicesUrl, monthMoment);
   debug(`fetching accounts from ${dataUrl}`);
-  const dataResult = await fetchGetWithinPage<ScrapedAccountsWithinPageResponse>(page, dataUrl);
+  const dataResult = await rateLimiter.executeWithRetry(() =>
+    fetchGetWithinPage<ScrapedAccountsWithinPageResponse>(page, dataUrl, { treatBlockedResponse: true }),
+  );
   if (dataResult && _.get(dataResult, 'Header.Status') === '1' && dataResult.DashboardMonthBean) {
     const { cardsCharges } = dataResult.DashboardMonthBean;
     if (cardsCharges) {
@@ -223,12 +228,15 @@ async function fetchTransactions(
   companyServiceOptions: CompanyServiceOptions,
   startMoment: Moment,
   monthMoment: Moment,
+  rateLimiter: RateLimiter,
 ): Promise<ScrapedAccountsWithIndex> {
-  const accounts = await fetchAccounts(page, companyServiceOptions.servicesUrl, monthMoment);
+  const accounts = await fetchAccounts(page, companyServiceOptions.servicesUrl, monthMoment, rateLimiter);
   const dataUrl = getTransactionsUrl(companyServiceOptions.servicesUrl, monthMoment);
-  await sleep(RATE_LIMIT.SLEEP_BETWEEN);
+  await rateLimiter.waitBetweenRequests();
   debug(`fetching transactions from ${dataUrl} for month ${monthMoment.format('YYYY-MM')}`);
-  const dataResult = await fetchGetWithinPage<ScrapedTransactionData>(page, dataUrl);
+  const dataResult = await rateLimiter.executeWithRetry(() =>
+    fetchGetWithinPage<ScrapedTransactionData>(page, dataUrl, { treatBlockedResponse: true }),
+  );
   if (dataResult && _.get(dataResult, 'Header.Status') === '1' && dataResult.CardsTransactionsListBean) {
     const accountTxns: ScrapedAccountsWithIndex = {};
     accounts.forEach(account => {
@@ -255,10 +263,7 @@ async function fetchTransactions(
         if (options.outputData?.enableTransactionsFilterByDate ?? true) {
           allTxns = filterOldTransactions(allTxns, startMoment, options.combineInstallments || false);
         }
-        if (
-          options.transactionMonthsEndDate &&
-          (options.outputData?.enableTransactionsFilterByDate ?? true)
-        ) {
+        if (options.transactionMonthsEndDate && (options.outputData?.enableTransactionsFilterByDate ?? true)) {
           const endCapDay = moment(options.transactionMonthsEndDate).endOf('day');
           allTxns = allTxns.filter(txn => moment(txn.date).isSameOrBefore(endCapDay));
         }
@@ -281,6 +286,7 @@ async function getExtraScrapTransaction(
   month: Moment,
   accountIndex: number,
   transaction: Transaction,
+  rateLimiter: RateLimiter,
 ): Promise<Transaction> {
   const url = new URL(options.servicesUrl);
   url.searchParams.set('reqName', 'PirteyIska_204');
@@ -291,8 +297,13 @@ async function getExtraScrapTransaction(
   debug(`fetching extra scrap for transaction ${transaction.identifier} for month ${month.format('YYYY-MM')}`);
   let data: ScrapedTransactionData | null = null;
   try {
-    data = await fetchGetWithinPage<ScrapedTransactionData>(page, url.toString());
+    data = await rateLimiter.executeWithRetry(() =>
+      fetchGetWithinPage<ScrapedTransactionData>(page, url.toString(), { treatBlockedResponse: true }),
+    );
   } catch (e) {
+    if (e instanceof FetchBlockedError) {
+      throw e;
+    }
     debug(
       `failed to fetch extra scrap for transaction ${transaction.identifier} for month ${month.format(
         'YYYY-MM',
@@ -325,6 +336,7 @@ async function getExtraScrapAccount(
   options: CompanyServiceOptions,
   accountMap: ScrapedAccountsWithIndex,
   month: moment.Moment,
+  rateLimiter: RateLimiter,
 ): Promise<ScrapedAccountsWithIndex> {
   const accounts: ScrapedAccountsWithIndex[string][] = [];
   for (const account of Object.values(accountMap)) {
@@ -333,12 +345,12 @@ async function getExtraScrapAccount(
       month.format('YYYY-MM'),
     );
     const txns: Transaction[] = [];
-    for (const txnsChunk of _.chunk(account.txns, RATE_LIMIT.TRANSACTIONS_BATCH_SIZE)) {
+    for (const txnsChunk of _.chunk(account.txns, TRANSACTIONS_BATCH_SIZE)) {
       debug(`processing chunk of ${txnsChunk.length} transactions for account ${account.accountNumber}`);
-      const updatedTxns = await Promise.all(
-        txnsChunk.map(t => getExtraScrapTransaction(page, options, month, account.index, t)),
+      const updatedTxns = await runSerial(
+        txnsChunk.map(t => () => getExtraScrapTransaction(page, options, month, account.index, t, rateLimiter)),
       );
-      await sleep(RATE_LIMIT.SLEEP_BETWEEN);
+      await rateLimiter.waitBetweenRequests();
       txns.push(...updatedTxns);
     }
     accounts.push({ ...account, txns });
@@ -353,6 +365,7 @@ async function getAdditionalTransactionInformation(
   page: Page,
   options: CompanyServiceOptions,
   allMonths: moment.Moment[],
+  rateLimiter: RateLimiter,
 ): Promise<ScrapedAccountsWithIndex[]> {
   if (
     !scraperOptions.additionalTransactionInformation ||
@@ -360,14 +373,56 @@ async function getAdditionalTransactionInformation(
   ) {
     return accountsWithIndex;
   }
-  return runSerial(accountsWithIndex.map((a, i) => () => getExtraScrapAccount(page, options, a, allMonths[i])));
+  return runSerial(
+    accountsWithIndex.map((a, i) => () => getExtraScrapAccount(page, options, a, allMonths[i], rateLimiter)),
+  );
+}
+
+async function getAdditionalTransactionInformationWithRecycle(
+  scraperOptions: ScraperOptions,
+  accountsWithIndex: ScrapedAccountsWithIndex[],
+  resolvePage: () => Page,
+  options: CompanyServiceOptions,
+  allMonths: moment.Moment[],
+  rateLimiter: RateLimiter,
+  tryRecycle?: () => Promise<boolean>,
+): Promise<ScrapedAccountsWithIndex[]> {
+  if (
+    !scraperOptions.additionalTransactionInformation ||
+    scraperOptions.optInFeatures?.includes('isracard-amex:skipAdditionalTransactionInformation')
+  ) {
+    return accountsWithIndex;
+  }
+  for (;;) {
+    try {
+      return await getAdditionalTransactionInformation(
+        scraperOptions,
+        accountsWithIndex,
+        resolvePage(),
+        options,
+        allMonths,
+        rateLimiter,
+      );
+    } catch (e) {
+      if (e instanceof FetchBlockedError && tryRecycle) {
+        const ok = await tryRecycle();
+        if (ok) {
+          continue;
+        }
+      }
+      throw e;
+    }
+  }
 }
 
 async function fetchAllTransactions(
-  page: Page,
+  resolvePage: () => Page,
   options: ScraperOptions,
   companyServiceOptions: CompanyServiceOptions,
   startMoment: Moment,
+  rateLimiter: RateLimiter,
+  emitProgress: (type: ScraperProgressTypes, extra?: Record<string, any>) => void,
+  tryRecycle?: () => Promise<boolean>,
 ) {
   const futureMonthsToScrape = options.futureMonthsToScrape ?? 1;
   let allMonths: Moment[];
@@ -383,28 +438,51 @@ async function fetchAllTransactions(
       spanEnd = lastAllowed;
     }
     allMonths = [];
-    for (
-      let cur = startM.clone();
-      cur.isSameOrBefore(spanEnd, 'month');
-      cur = cur.clone().add(1, 'month')
-    ) {
+    for (let cur = startM.clone(); cur.isSameOrBefore(spanEnd, 'month'); cur = cur.clone().add(1, 'month')) {
       allMonths.push(cur.clone());
     }
   } else {
     allMonths = getAllMonthMoments(startMoment, futureMonthsToScrape);
   }
-  const results: ScrapedAccountsWithIndex[] = await runSerial(
-    allMonths.map(monthMoment => () => {
-      return fetchTransactions(page, options, companyServiceOptions, startMoment, monthMoment);
-    }),
-  );
+  const results: ScrapedAccountsWithIndex[] = [];
+  let monthIndex = 0;
+  while (monthIndex < allMonths.length) {
+    const monthMoment = allMonths[monthIndex];
+    emitProgress(ScraperProgressTypes.ScrapingMonth, {
+      monthIndex: monthIndex + 1,
+      totalMonths: allMonths.length,
+      month: monthMoment.format('YYYY-MM'),
+    });
+    try {
+      const monthResult = await fetchTransactions(
+        resolvePage(),
+        options,
+        companyServiceOptions,
+        startMoment,
+        monthMoment,
+        rateLimiter,
+      );
+      results.push(monthResult);
+      monthIndex += 1;
+    } catch (e) {
+      if (e instanceof FetchBlockedError && tryRecycle) {
+        const recycled = await tryRecycle();
+        if (recycled) {
+          continue;
+        }
+      }
+      throw e;
+    }
+  }
 
-  const finalResult = await getAdditionalTransactionInformation(
+  const finalResult = await getAdditionalTransactionInformationWithRecycle(
     options,
     results,
-    page,
+    resolvePage,
     companyServiceOptions,
     allMonths,
+    rateLimiter,
+    tryRecycle,
   );
   const combinedTxns: Record<string, Transaction[]> = {};
 
@@ -441,15 +519,25 @@ class IsracardAmexBaseScraper extends BaseScraperWithBrowser<ScraperSpecificCred
 
   private servicesUrl: string;
 
+  private rateLimiter: RateLimiter;
+
+  private recycleCredentials: ScraperSpecificCredentials | null = null;
+
+  private browserRecyclesRemaining = 0;
+
   constructor(options: ScraperOptions, baseUrl: string, companyCode: string) {
     super(options);
 
     this.baseUrl = baseUrl;
     this.companyCode = companyCode;
     this.servicesUrl = `${baseUrl}/services/ProxyRequestHandler.ashx`;
+    this.rateLimiter = new RateLimiter(options.rateLimitOptions, (attempt, delayMs, backoffBaseMs) => {
+      this.emitProgress(ScraperProgressTypes.RateLimitRetry, { attempt, delay: delayMs, backoffBaseMs });
+    });
   }
 
   async login(credentials: ScraperSpecificCredentials): Promise<ScraperScrapingResult> {
+    this.recycleCredentials = credentials;
     await this.page.setRequestInterception(true);
     this.page.on('request', request => {
       if (request.url().includes('detector-dom.min.js')) {
@@ -476,7 +564,17 @@ class IsracardAmexBaseScraper extends BaseScraperWithBrowser<ScraperSpecificCred
       companyCode: this.companyCode,
     };
     debug('logging in with validate request');
-    const validateResult = await fetchPostWithinPage<ScrapedLoginValidation>(this.page, validateUrl, validateRequest);
+    const validateResult = await this.rateLimiter.executeWithRetry(() =>
+      fetchPostWithinPage<ScrapedLoginValidation>(
+        this.page,
+        validateUrl,
+        validateRequest,
+        {},
+        {
+          treatBlockedResponse: true,
+        },
+      ),
+    );
     if (
       !validateResult ||
       !validateResult.Header ||
@@ -501,7 +599,9 @@ class IsracardAmexBaseScraper extends BaseScraperWithBrowser<ScraperSpecificCred
         idType: ID_TYPE,
       };
       debug('user login started');
-      const loginResult = await fetchPostWithinPage<{ status: string }>(this.page, loginUrl, request);
+      const loginResult = await this.rateLimiter.executeWithRetry(() =>
+        fetchPostWithinPage<{ status: string }>(this.page, loginUrl, request, {}, { treatBlockedResponse: true }),
+      );
       debug(`user login with status '${loginResult?.status}'`, loginResult);
 
       if (loginResult && loginResult.status === '1') {
@@ -544,15 +644,43 @@ class IsracardAmexBaseScraper extends BaseScraperWithBrowser<ScraperSpecificCred
     const startDate = this.options.startDate || defaultStartMoment.toDate();
     const startMoment = moment(startDate);
 
+    const rlOpts = this.options.rateLimitOptions;
+    const recycleEnabled = !!rlOpts?.recycleBrowserOnBlock;
+    this.browserRecyclesRemaining = recycleEnabled ? (rlOpts?.maxBrowserRecycles ?? 2) : 0;
+
+    const tryRecycle = async (): Promise<boolean> => {
+      if (!recycleEnabled || this.browserRecyclesRemaining <= 0 || !this.recycleCredentials) {
+        return false;
+      }
+      this.emitProgress(ScraperProgressTypes.SessionRecycle, {
+        recyclesRemaining: this.browserRecyclesRemaining,
+      });
+      await this.resetBrowserSession();
+      const loginResult = await this.login(this.recycleCredentials);
+      if (!loginResult.success) {
+        throw new Error(loginResult.errorMessage ?? 're-login after session recycle failed');
+      }
+      this.browserRecyclesRemaining -= 1;
+      return true;
+    };
+
     return fetchAllTransactions(
-      this.page,
+      () => this.page,
       this.options,
       {
         servicesUrl: this.servicesUrl,
         companyCode: this.companyCode,
       },
       startMoment,
+      this.rateLimiter,
+      (type, extra) => this.emitProgress(type, extra),
+      tryRecycle,
     );
+  }
+
+  async terminate(success: boolean) {
+    this.recycleCredentials = null;
+    await super.terminate(success);
   }
 }
 

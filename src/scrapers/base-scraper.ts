@@ -1,8 +1,9 @@
 import { EventEmitter } from 'events';
 import moment from 'moment-timezone';
 import { type CompanyTypes, ScraperProgressTypes } from '../definitions';
+import { FetchBlockedError } from '../helpers/fetch';
 import { TimeoutError } from '../helpers/waiting';
-import { createGenericError, createTimeoutError } from './errors';
+import { createGenericError, createRateLimitedError, createTimeoutError } from './errors';
 import {
   type Scraper,
   type ScraperCredentials,
@@ -14,6 +15,16 @@ import {
 } from './interface';
 
 const SCRAPE_PROGRESS = 'SCRAPE_PROGRESS';
+
+function errorResultFromCaught(e: unknown) {
+  if (e instanceof TimeoutError) {
+    return createTimeoutError((e as Error).message);
+  }
+  if (e instanceof FetchBlockedError) {
+    return createRateLimitedError((e as Error).message);
+  }
+  return createGenericError((e as Error).message);
+}
 
 export class BaseScraper<TCredentials extends ScraperCredentials> implements Scraper<TCredentials> {
   private eventEmitter = new EventEmitter();
@@ -34,8 +45,7 @@ export class BaseScraper<TCredentials extends ScraperCredentials> implements Scr
     try {
       loginResult = await this.login(credentials);
     } catch (e) {
-      loginResult =
-        e instanceof TimeoutError ? createTimeoutError((e as Error).message) : createGenericError((e as Error).message);
+      loginResult = errorResultFromCaught(e);
     }
 
     let scrapeResult;
@@ -43,10 +53,7 @@ export class BaseScraper<TCredentials extends ScraperCredentials> implements Scr
       try {
         scrapeResult = await this.fetchData();
       } catch (e) {
-        scrapeResult =
-          e instanceof TimeoutError
-            ? createTimeoutError((e as Error).message)
-            : createGenericError((e as Error).message);
+        scrapeResult = errorResultFromCaught(e);
       }
     } else {
       scrapeResult = loginResult;
@@ -88,15 +95,15 @@ export class BaseScraper<TCredentials extends ScraperCredentials> implements Scr
     this.emitProgress(ScraperProgressTypes.Terminating);
   }
 
-  protected emitProgress(type: ScraperProgressTypes) {
-    this.emit(SCRAPE_PROGRESS, { type });
+  protected emitProgress(type: ScraperProgressTypes, extra?: Record<string, any>) {
+    this.emit(SCRAPE_PROGRESS, { type, ...extra });
   }
 
   protected emit(eventName: string, payload: Record<string, any>) {
     this.eventEmitter.emit(eventName, this.options.companyId, payload);
   }
 
-  onProgress(func: (companyId: CompanyTypes, payload: { type: ScraperProgressTypes }) => void) {
+  onProgress(func: (companyId: CompanyTypes, payload: { type: ScraperProgressTypes; [key: string]: any }) => void) {
     this.eventEmitter.on(SCRAPE_PROGRESS, func);
   }
 }

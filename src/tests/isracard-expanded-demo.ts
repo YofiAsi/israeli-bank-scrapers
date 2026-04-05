@@ -8,12 +8,7 @@ dotenv.config();
 
 const CHROMIUM_PATH = process.env.CHROMIUM_PATH || '/usr/bin/chromium';
 
-const BROWSER_ARGS = [
-  '--no-sandbox',
-  '--disable-setuid-sandbox',
-  '--disable-dev-shm-usage',
-  '--disable-gpu',
-];
+const BROWSER_ARGS = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'];
 
 function getEnvOrThrow(name: string): string {
   const value = process.env[name];
@@ -88,4 +83,3 @@ main().catch(e => {
   console.error(e);
   process.exit(1);
 });
-
