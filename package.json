@@ -73,7 +73,7 @@
     "minimist": "^1.2.5",
     "ncp": "^2.0.0",
     "prettier": "^3.5.3",
-    "prettier-eslint": "^16.4.2",
+    "prettier-eslint": "^16.3.0",
     "rimraf": "^3.0.0",
     "source-map-support": "^0.5.16",
     "ts-jest": "^29.1.4",
